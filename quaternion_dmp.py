@@ -2,6 +2,7 @@ import numpy as np
 from scipy import interpolate
 from scipy.spatial.transform import Rotation as R
 from scipy.spatial.transform import Slerp
+import copy
 
 class QuaternionDMP():
 
@@ -16,6 +17,31 @@ class QuaternionDMP():
         self.N_bf = N_bf # number of basis functions
         self.tau = 1.0 # temporal scaling
 
+        self.phase = 1.0 # initialize phase variable
+
+    def imitate(self,demo_trajectory):
+        
+        t = np.linspace(0.0,self.T,demo_trajectory[:,0].shape[0])
+        self.q_des = np.zeros([self.N,4])
+        slerp = Slerp(t,R.from_quat(demo_trajectory[:]))
+        self.q_des = slerp(np.linspace(0.0,self.T,self.N)).as_quat()
+
+        self.dq_des_log = self.quaternion_diff(self.q_des)
+        self.ddq_des_log = np.zeros(self.dq_des_log.shape)
+        for d in range(3):
+            self.ddq_des_log[:,d] = np.gradient(self.dq_des_log[:,d])/self.dt
+
+        # Initial and final orientation
+        self.q0 = self.q_des[0,:]
+        self.dq0_log = self.dq_des_log[0,:] 
+        self.ddq0_log = self.ddq_des_log[0,:]
+        self.qT = self.q_des[-1,:]
+
+        # Initialize the DMP
+        self.q = copy.deepcopy(self.q0)
+        self.dq_log = copy.deepcopy(self.dq0_log)
+        self.ddq_log = copy.deepcopy(self.ddq0_log)
+
         # Centers of basis functions 
         self.c = np.ones(self.N_bf) 
         c_ = np.linspace(0,self.T,self.N_bf)
@@ -26,37 +52,16 @@ class QuaternionDMP():
         # (as in https://github.com/studywolf/pydmps/blob/80b0a4518edf756773582cc5c40fdeee7e332169/pydmps/dmp_discrete.py#L37)
         self.h = np.ones(self.N_bf) * self.N_bf**1.5 / self.c / self.alphax
 
-    def imitate(self,demo_trajectory):
-        
-        t = np.linspace(0.0,self.T,demo_trajectory[:,0].shape[0])
-        self.q = np.zeros([self.N,4])
-        slerp = Slerp(t,R.from_quat(demo_trajectory[:]))
-        self.q = slerp(np.linspace(0.0,self.T,self.N)).as_quat()
-
-        self.dq_log = self.quaternion_diff(self.q)
-        self.ddq_log = np.zeros(self.dq_log.shape)
-        for d in range(3):
-            self.ddq_log[:,d] = np.gradient(self.dq_log[:,d])/self.dt
-
-        # Initial and final orientation
-        self.q0 = self.q[0,:]
-        self.dq_log0 = self.dq_log[0,:] 
-        self.ddq_log0 = self.ddq_log[0,:]
-        self.qT = self.q[-1,:]
-
-        # Evaluate the phase variable
-        self.phase = np.exp(-self.alphax*np.linspace(0.0,self.T,self.N))
-
         # Evaluate the forcing term
         forcing_target = np.zeros([self.N,3]) 
         for n in range(self.N):
-            forcing_target[n,:] = self.tau*self.ddq_log[n,:] - \
+            forcing_target[n,:] = self.tau*self.ddq_des_log[n,:] - \
                                     self.alphaz*(self.betaz*self.logarithmic_map(
-                                    self.quaternion_error(self.qT,self.q[n,:])) - self.dq_log[n,:])
+                                    self.quaternion_error(self.qT,self.q_des[n,:])) - self.dq_des_log[n,:])
 
         self.fit_dmp(forcing_target)
         
-        return self.q
+        return self.q_des
 
     def quaternion_conjugate(self,q):
         return q * np.array([1.0,-1.0,-1.0,-1.0])
@@ -105,22 +110,53 @@ class QuaternionDMP():
 
         return dq_log
 
-    def RBF(self):
-        return np.exp(-self.h*(self.phase[:,np.newaxis]-self.c)**2)
+    def RBF(self, phase):
+
+        if type(phase) is np.ndarray:
+            return np.exp(-self.h*(phase[:,np.newaxis]-self.c)**2)
+        else:
+            return np.exp(-self.h*(phase-self.c)**2)
 
     def forcing_function_approx(self,weights,phase):
-        BF = self.RBF()
-        return np.dot(BF,weights)*phase/np.sum(BF,axis=1)
+
+        BF = self.RBF(phase)
+        if type(phase) is np.ndarray:
+            return np.dot(BF,weights)*phase/np.sum(BF,axis=1)
+        else:
+            return np.dot(BF,weights)*phase/np.sum(BF)
 
     def fit_dmp(self,forcing_target):
 
-        BF = self.RBF()
-        X = BF*self.phase[:,np.newaxis]/np.sum(BF,axis=1)[:,np.newaxis]
+        phase = np.exp(-self.alphax*self.tau*np.arange(0,dmp.N)/dmp.N)
+        BF = self.RBF(phase)
+        X = BF*phase[:,np.newaxis]/np.sum(BF,axis=1)[:,np.newaxis]
         dof = forcing_target.shape[1]
 
         self.weights = np.zeros([self.N_bf,dof])
         for d in range(dof):
             self.weights[:,d] = np.dot(np.linalg.pinv(X),forcing_target[:,d])
+
+    def reset(self):
+        
+        self.phase = 1.0
+        self.q = copy.deepcopy(self.q0)
+        self.dq_log = copy.deepcopy(self.dq0_log)
+        self.ddq_log = copy.deepcopy(self.ddq0_log)
+
+    def step(self, disturbance=None):
+        
+        if disturbance is None:
+            disturbance = np.zeros(3)
+        
+        self.phase += (-self.alphax * self.tau * self.phase) * (self.T/self.N)
+        forcing_term = self.forcing_function_approx(self.weights,self.phase)
+        
+        self.ddq_log = self.alphaz*(self.betaz*self.logarithmic_map(
+                self.quaternion_error(self.qT,self.q)) - self.dq_log) + forcing_term + disturbance
+        self.dq_log += self.ddq_log * self.dt * self.tau
+        self.q = self.quaternion_product(self.exponential_map(self.tau*self.dq_log*self.dt),self.q)
+        
+        return copy.deepcopy(self.q), copy.deepcopy(self.dq_log), copy.deepcopy(self.ddq_log)
 
     def rollout(self,tau=1.0):
 
@@ -128,8 +164,8 @@ class QuaternionDMP():
         dq_log_rollout = np.zeros([self.N,3])
         ddq_log_rollout = np.zeros([self.N,3])
         q_rollout[0,:] = self.q0
-        dq_log_rollout[0,:] = self.dq_log0
-        ddq_log_rollout[0,:] = self.ddq_log0
+        dq_log_rollout[0,:] = self.dq0_log
+        ddq_log_rollout[0,:] = self.ddq0_log
         
         phase = np.exp(-self.alphax*tau*np.linspace(0.0,self.T,self.N))
 
@@ -171,7 +207,7 @@ if __name__ == "__main__":
     print(np.linalg.norm(q_rollout,axis=1))
 
     # Test with random sequence
-    dmp = QuaternionDMP(N_bf = 100)
+    dmp = QuaternionDMP(N_bf = 300)
     q_des = dmp.imitate(np.random.rand(50,4))
     q_rollout, _, _ = dmp.rollout()
 
@@ -183,3 +219,26 @@ if __name__ == "__main__":
         plt.legend()
     plt.show()
     print(np.linalg.norm(q_rollout,axis=1))
+
+    # Test the feedback mode
+    dmp = QuaternionDMP(N_bf = 10)
+    q_des = dmp.imitate(demo_trajectory)
+    dmp.reset()
+
+    q_list = []
+    for i in range(q_des.shape[0]):
+        if i in range(10,15):
+            print('here')
+            q, _, _ = dmp.step(disturbance=30*np.random.randn(3))
+        else:
+            q, _, _ = dmp.step()
+        q_list.append(q)
+
+    fig = plt.figure(figsize=(18,3))
+    for d in range(4):
+        plt.subplot(141+d)
+        plt.plot(q_des[:,d],label='demo')
+        plt.plot(np.array(q_list)[:,d],'--',label='dmp')
+        plt.legend()
+    plt.show()
+    print(np.linalg.norm(np.array(q_list),axis=1))
