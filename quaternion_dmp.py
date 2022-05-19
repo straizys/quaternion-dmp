@@ -228,7 +228,6 @@ if __name__ == "__main__":
     q_list = []
     for i in range(q_des.shape[0]):
         if i in range(10,15):
-            print('here')
             q, _, _ = dmp.step(disturbance=30*np.random.randn(3))
         else:
             q, _, _ = dmp.step()
