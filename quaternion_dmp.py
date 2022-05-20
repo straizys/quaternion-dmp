@@ -133,8 +133,13 @@ class QuaternionDMP():
         dof = forcing_target.shape[1]
 
         self.weights = np.zeros([self.N_bf,dof])
-        for d in range(dof):
-            self.weights[:,d] = np.dot(np.linalg.pinv(X),forcing_target[:,d])
+        # for d in range(dof):
+        #     self.weights[:,d] = np.dot(np.linalg.pinv(X),forcing_target[:,d])
+
+        regcoef = 0.01
+        for d in range(dof):        
+            self.weights[:,d] = np.dot(np.dot(np.linalg.pinv(np.dot(X.T,(X)) + \
+                                regcoef * np.eye(X.shape[1])),X.T),forcing_target[:,d].T)
 
     def reset(self):
         
