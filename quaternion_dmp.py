@@ -12,8 +12,8 @@ class QuaternionDMP():
         self.dt = dt
         self.N = int(self.T/self.dt) # timesteps
         self.alphax = 1.0
-        self.alphaz = 12
-        self.betaz = 3
+        self.alphaz = 25.0
+        self.betaz = 6.25
         self.N_bf = N_bf # number of basis functions
         self.tau = 1.0 # temporal scaling
 
@@ -64,13 +64,13 @@ class QuaternionDMP():
         return self.q_des
 
     def quaternion_conjugate(self,q):
-        return q * np.array([1.0,-1.0,-1.0,-1.0])
+        return q * np.array([-1.0,-1.0,-1.0,1.0])
 
     def quaternion_product(self,q1,q2):
 
         q12 = np.zeros(4)
-        q12[0] = q1[0]*q2[0] - np.dot(q1[1:],q2[1:])
-        q12[1:] = q1[0]*q2[1:] + q2[0]*q1[1:] + np.cross(q1[1:],q2[1:])
+        q12[-1] = q1[-1]*q2[-1] - np.dot(q1[:-1],q2[:-1])
+        q12[:-1] = q1[-1]*q2[:-1] + q2[-1]*q1[:-1] + np.cross(q1[:-1],q2[:-1])
         return q12
 
     def quaternion_error(self,q1,q2):
@@ -80,23 +80,23 @@ class QuaternionDMP():
 
         theta = np.linalg.norm(r) # rotation angle
         if theta == 0.0:
-            return np.array([1.0, 0.0, 0.0, 0.0])
+            return np.array([0.0, 0.0, 0.0, 1.0])
 
         n = r / np.linalg.norm(r) # rotation axis (unit vector)
 
         q = np.zeros(4)
-        q[0] = np.cos(theta / 2.0)
-        q[1:] = np.sin(theta/ 2.0) * n
+        q[-1] = np.cos(theta / 2.0)
+        q[:-1] = np.sin(theta/ 2.0) * n
 
         return q
 
     def logarithmic_map(self,q):
 
-        if np.linalg.norm(q[1:]) < np.finfo(float).eps:
+        if np.linalg.norm(q[:-1]) < np.finfo(float).eps:
             return np.zeros(3)
 
-        n = q[1:] / np.linalg.norm(q[1:])
-        theta = 2.0 * np.arctan2(np.linalg.norm(q[1:]),q[0])
+        n = q[:-1] / np.linalg.norm(q[:-1])
+        theta = 2.0 * np.arctan2(np.linalg.norm(q[:-1]),q[-1])
 
         return theta*n
 
